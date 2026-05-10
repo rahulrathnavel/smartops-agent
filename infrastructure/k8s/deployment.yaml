@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: agent
-          image: 295284356306.dkr.ecr.ap-south-1.amazonaws.com/smartops-agent:v2
+          image: 295284356306.dkr.ecr.ap-south-1.amazonaws.com/smartops-agent:v3
           ports:
             - containerPort: 3000
           envFrom:
