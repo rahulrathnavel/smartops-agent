@@ -1,4 +1,6 @@
 node_modules/
+# Local secrets (real credentials - never commit)
+*.local.yaml
 dist/
 .env
 *.log

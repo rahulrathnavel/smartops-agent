@@ -4,9 +4,7 @@ metadata:
   name: smartops-config
   namespace: smartops-system
 data:
-  # Slack channel ID where incidents are posted
-  SLACK_CHANNEL_ID: ""
-  # AWS resources (populated after terraform apply)
+  SLACK_CHANNEL_ID: "C0B2SEMEWEA"
   AUDIT_S3_BUCKET: "smartops-audit-295284356306"
   AUDIT_LOG_GROUP: "/smartops/agent/audit"
   AUDIT_LOG_STREAM: "agent-main"
