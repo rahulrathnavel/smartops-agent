@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smartops-config
+  namespace: smartops-system
+data:
+  # Slack channel ID where incidents are posted
+  SLACK_CHANNEL_ID: ""
+  # AWS resources (populated after terraform apply)
+  AUDIT_S3_BUCKET: "smartops-audit-295284356306"
+  AUDIT_LOG_GROUP: "/smartops/agent/audit"
+  AUDIT_LOG_STREAM: "agent-main"
+  SQS_QUEUE_URL: ""
+  EKS_LOG_GROUP: "/aws/eks/ammazone-eks/containers"
+  AWS_REGION: "ap-south-1"

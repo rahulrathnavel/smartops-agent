@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smartops-agent
+  namespace: smartops-system
+  labels:
+    app: smartops-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smartops-agent
+  template:
+    metadata:
+      labels:
+        app: smartops-agent
+    spec:
+      containers:
+        - name: agent
+          image: 295284356306.dkr.ecr.ap-south-1.amazonaws.com/smartops-agent:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: smartops-secrets
+            - configMapRef:
+                name: smartops-config
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10

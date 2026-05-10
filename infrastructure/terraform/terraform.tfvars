@@ -1,0 +1,6 @@
+aws_region         = "ap-south-1"
+aws_profile        = "praveen"
+project_name       = "smartops"
+eks_cluster_name   = "ammazone-eks"
+eks_node_role_name = "ammazone-eks-node-role"
+account_id         = "295284356306"
