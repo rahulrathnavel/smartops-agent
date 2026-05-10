@@ -18,6 +18,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "audit_lifecycle" {
     id     = "expire-old-payloads"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = 90
     }
@@ -110,27 +112,33 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 # Routes forward to the EKS NodePort (31200)
-# In production, this would use a VPC Link; for POC, we route via public NodePort
 
-resource "aws_apigatewayv2_integration" "eks_proxy" {
+resource "aws_apigatewayv2_integration" "slack_proxy" {
   api_id             = aws_apigatewayv2_api.webhooks.id
   integration_type   = "HTTP_PROXY"
   integration_method = "POST"
-  # This URI will be updated after EKS deployment with the actual node IP
-  integration_uri = "http://placeholder:31200/{proxy}"
+  integration_uri    = "http://13.206.145.87:31200/slack/interactions"
+}
+
+resource "aws_apigatewayv2_integration" "github_proxy" {
+  api_id             = aws_apigatewayv2_api.webhooks.id
+  integration_type   = "HTTP_PROXY"
+  integration_method = "POST"
+  integration_uri    = "http://13.206.145.87:31200/webhooks/github"
 }
 
 resource "aws_apigatewayv2_route" "slack" {
   api_id    = aws_apigatewayv2_api.webhooks.id
   route_key = "POST /slack/interactions"
-  target    = "integrations/${aws_apigatewayv2_integration.eks_proxy.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.slack_proxy.id}"
 }
 
 resource "aws_apigatewayv2_route" "github" {
   api_id    = aws_apigatewayv2_api.webhooks.id
   route_key = "POST /webhooks/github"
-  target    = "integrations/${aws_apigatewayv2_integration.eks_proxy.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.github_proxy.id}"
 }
+
 
 # ── IAM Policy: Allow EKS nodes to access SmartOps resources ────────────────
 
