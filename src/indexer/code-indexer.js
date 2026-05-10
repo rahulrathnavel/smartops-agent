@@ -13,7 +13,7 @@ const { logAuditEvent } = require('../audit/audit-logger');
 
 // File extensions we want to index
 const INDEXABLE_EXTENSIONS = ['.js', '.jsx', '.ts', '.tsx', '.json', '.yaml', '.yml', '.tf'];
-const MAX_CHUNK_SIZE = 1500; // characters per chunk (keeps embeddings focused)
+const MAX_CHUNK_SIZE = 400; // characters per chunk (NVIDIA NIM embeds max 512 tokens)
 
 // Directories to skip
 const SKIP_DIRS = ['node_modules', '.git', 'dist', 'build', 'coverage', '.terraform'];
@@ -72,7 +72,7 @@ function chunkFile(filePath, content) {
       service: getService(filePath),
       chunkType: i === 0 ? 'header' : 'body',
       chunkIndex: i,
-      content: c.content.substring(0, 800), // Store truncated content in metadata
+      content: c.content.substring(0, 350), // Store truncated content in metadata
     },
   }));
 }
@@ -117,16 +117,25 @@ async function indexFullRepo() {
     console.log(`[INDEXER] Generated ${allChunks.length} chunks, generating embeddings...`);
 
     // Generate embeddings in batches
-    const texts = allChunks.map((c) => `File: ${c.metadata.filePath}\n${c.content}`);
+    const texts = allChunks.map((c) => `${c.metadata.filePath}\n${c.content}`.substring(0, 450));
     const embeddings = await generateEmbeddings(texts);
 
-    // Attach embeddings to chunks
+    // Attach embeddings to chunks, skip any that failed (zero vectors)
+    const validChunks = [];
     for (let i = 0; i < allChunks.length; i++) {
-      allChunks[i].embedding = embeddings[i]?.embedding || new Array(1024).fill(0);
+      const emb = embeddings[i]?.embedding;
+      if (emb && emb.some((v) => v !== 0)) {
+        allChunks[i].embedding = emb;
+        validChunks.push(allChunks[i]);
+      }
     }
 
-    // Upsert to Pinecone
-    await pinecone.upsertChunks(allChunks);
+    console.log(`[INDEXER] ${validChunks.length}/${allChunks.length} chunks have valid embeddings`);
+
+    // Upsert to Pinecone (only valid, non-zero vectors)
+    if (validChunks.length > 0) {
+      await pinecone.upsertChunks(validChunks);
+    }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[INDEXER] Full index complete: ${allChunks.length} vectors in ${elapsed}s`);
@@ -158,14 +167,21 @@ async function indexChangedFiles(changedFiles) {
       const content = await github.getFileContent(filePath);
       const chunks = chunkFile(filePath, content);
 
-      const texts = chunks.map((c) => `File: ${c.metadata.filePath}\n${c.content}`);
+      const texts = chunks.map((c) => `${c.metadata.filePath}\n${c.content}`.substring(0, 450));
       const embeddings = await generateEmbeddings(texts);
 
+      const validChunks = [];
       for (let i = 0; i < chunks.length; i++) {
-        chunks[i].embedding = embeddings[i]?.embedding || new Array(1024).fill(0);
+        const emb = embeddings[i]?.embedding;
+        if (emb && emb.some((v) => v !== 0)) {
+          chunks[i].embedding = emb;
+          validChunks.push(chunks[i]);
+        }
       }
 
-      await pinecone.upsertChunks(chunks);
+      if (validChunks.length > 0) {
+        await pinecone.upsertChunks(validChunks);
+      }
       console.log(`[INDEXER] Re-indexed ${filePath} (${chunks.length} chunks)`);
     } catch (err) {
       console.warn(`[INDEXER] Failed to re-index ${filePath}:`, err.message);

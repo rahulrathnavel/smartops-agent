@@ -26,6 +26,9 @@ async function generateEmbeddings(texts, inputType = 'passage') {
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
     try {
+      // Truncate each input to stay within 512-token limit (~450 chars safe)
+      const truncatedBatch = batch.map((t) => t.substring(0, 450));
+
       const response = await fetch(EMBED_URL, {
         method: 'POST',
         headers: {
@@ -34,9 +37,10 @@ async function generateEmbeddings(texts, inputType = 'passage') {
         },
         body: JSON.stringify({
           model: config.nvidia.embeddingModel,
-          input: batch,
+          input: truncatedBatch,
           input_type: inputType,
           encoding_format: 'float',
+          truncate: 'END',
         }),
       });
 
