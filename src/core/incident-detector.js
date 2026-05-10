@@ -1,27 +1,27 @@
 'use strict';
 
-const {
-  CloudWatchLogsClient,
-  FilterLogEventsCommand,
-} = require('@aws-sdk/client-cloudwatch-logs');
+const k8s = require('@kubernetes/client-node');
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const { config } = require('../config');
 
 // ---------------------------------------------------------------------------
 // Incident Detector.
-// Two modes:
-//   1. Log tail: Polls CloudWatch Logs for error patterns (500s, exceptions)
-//   2. Alarm consumer: Reads SQS messages from CloudWatch Alarm SNS topic
+// Primary mode: Kubernetes API log tailing (reads pod logs directly)
+// Secondary mode: SQS alarm consumer (CloudWatch Alarm SNS topic)
 // ---------------------------------------------------------------------------
 
-let cwClient = null;
+let coreApi = null;
 let sqsClient = null;
-let lastLogTimestamp = Date.now() - 60_000; // Start from 1 minute ago
+let lastPollTime = new Date(Date.now() - 60_000); // Start from 1 minute ago
 const seenSignatures = new Map(); // signature -> timestamp (for dedup)
 
-function getCwClient() {
-  if (!cwClient) cwClient = new CloudWatchLogsClient({ region: config.aws.region });
-  return cwClient;
+function getK8sApi() {
+  if (!coreApi) {
+    const kc = new k8s.KubeConfig();
+    kc.loadFromCluster(); // Uses in-cluster service account
+    coreApi = kc.makeApiClient(k8s.CoreV1Api);
+  }
+  return coreApi;
 }
 
 function getSqsClient() {
@@ -58,57 +58,77 @@ function isDuplicate(signature) {
 }
 
 // ---------------------------------------------------------------------------
-// Poll CloudWatch Logs for error patterns.
-// Returns array of detected incidents.
+// Poll Kubernetes pod logs for error patterns.
+// Reads logs directly from pods in the target namespace via K8s API.
 // ---------------------------------------------------------------------------
-async function pollLogs() {
+async function pollKubeLogs() {
   const incidents = [];
+  const api = getK8sApi();
+  const targetNamespace = config.detection.targetNamespace || 'ammazone';
 
   try {
-    const client = getCwClient();
-    const filterPattern = config.detection.errorPatterns
-      .map((p) => `"${p}"`)
-      .join(' || ');
+    // List all pods in the target namespace
+    const podList = await api.listNamespacedPod({ namespace: targetNamespace });
+    const pods = podList.items || [];
 
-    const result = await client.send(new FilterLogEventsCommand({
-      logGroupName: config.aws.eksLogGroup,
-      startTime: lastLogTimestamp,
-      endTime: Date.now(),
-      limit: 50,
-    }));
+    for (const pod of pods) {
+      const podName = pod.metadata?.name || 'unknown';
+      const service = pod.metadata?.labels?.app || podName.split('-')[0] || 'unknown';
 
-    if (result.events && result.events.length > 0) {
-      lastLogTimestamp = Math.max(...result.events.map((e) => e.timestamp || 0)) + 1;
+      // Skip non-running pods
+      if (pod.status?.phase !== 'Running') continue;
 
-      for (const event of result.events) {
-        const msg = event.message || '';
+      try {
+        // Read logs since last poll (sinceSeconds for safety, sinceTime for precision)
+        const sinceSeconds = Math.max(
+          Math.ceil((Date.now() - lastPollTime.getTime()) / 1000),
+          30
+        );
 
-        // Check if message matches any error pattern
-        const isError = config.detection.errorPatterns.some((p) => msg.includes(p));
-        if (!isError) continue;
+        const logResponse = await api.readNamespacedPodLog({
+          name: podName,
+          namespace: targetNamespace,
+          sinceSeconds,
+          tailLines: 100,
+        });
 
-        // Extract service name from log group/stream
-        const service = event.logStreamName?.split('/')[0] || 'unknown';
-        const sig = errorSignature(service, msg);
+        const logText = typeof logResponse === 'string' ? logResponse : (logResponse?.body || '');
+        if (!logText) continue;
 
-        if (!isDuplicate(sig)) {
-          incidents.push({
-            source: 'log_tail',
-            service,
-            errorLog: msg,
-            timestamp: new Date(event.timestamp || Date.now()).toISOString(),
-            logStream: event.logStreamName,
-          });
+        const lines = logText.split('\n');
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+
+          // Check if line matches any error pattern
+          const isError = config.detection.errorPatterns.some((p) => line.includes(p));
+          if (!isError) continue;
+
+          const sig = errorSignature(service, line);
+          if (!isDuplicate(sig)) {
+            console.log(`[DETECTOR] Error found in ${service}: ${line.substring(0, 120)}...`);
+            incidents.push({
+              source: 'kube_logs',
+              service,
+              errorLog: line,
+              timestamp: new Date().toISOString(),
+              podName,
+              namespace: targetNamespace,
+            });
+          }
+        }
+      } catch (logErr) {
+        // Pod might be initializing, skip it
+        if (!logErr.message?.includes('is waiting to start')) {
+          console.warn(`[DETECTOR] Could not read logs for ${podName}: ${logErr.message?.substring(0, 80)}`);
         }
       }
     }
   } catch (err) {
-    // Log group may not exist yet if e-commerce app is not deployed
-    if (err.name !== 'ResourceNotFoundException') {
-      console.error('[DETECTOR] Log poll failed:', err.message);
-    }
+    console.error('[DETECTOR] K8s log poll failed:', err.message?.substring(0, 100));
   }
 
+  lastPollTime = new Date();
   return incidents;
 }
 
@@ -166,10 +186,11 @@ async function pollAlarms() {
 // ---------------------------------------------------------------------------
 function startDetectionLoop(onIncident) {
   console.log(`[DETECTOR] Starting detection loop (interval: ${config.detection.pollIntervalMs}ms)`);
+  console.log(`[DETECTOR] Monitoring pods in namespace: ${config.detection.targetNamespace || 'ammazone'}`);
 
   async function tick() {
     try {
-      const logIncidents = await pollLogs();
+      const logIncidents = await pollKubeLogs();
       const alarmIncidents = await pollAlarms();
       const all = [...logIncidents, ...alarmIncidents];
 
@@ -187,4 +208,4 @@ function startDetectionLoop(onIncident) {
   return setInterval(tick, config.detection.pollIntervalMs);
 }
 
-module.exports = { startDetectionLoop, pollLogs, pollAlarms };
+module.exports = { startDetectionLoop, pollKubeLogs, pollAlarms };

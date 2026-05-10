@@ -72,6 +72,7 @@ const config = {
       'ECONNREFUSED',
       'MongoServerError',
     ],
+    targetNamespace: 'ammazone',
   },
 };
 
